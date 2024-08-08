@@ -1,21 +1,32 @@
 const std = @import("std");
 const Archetype = @import("archetype.zig").Archetype;
-const ComponentList = @import("archetype.zig").ComponentList;
+const ComponentList = @import("component_list.zig").ComponentList;
 const System = @import("system.zig").System;
 const util = @import("util.zig");
 
 const ArchetypeSet = std.AutoHashMap(*Archetype, void);
+
+pub const EntityId = struct { id: usize };
+
 pub const ZCS = struct {
     allocator: std.mem.Allocator,
     entity_count: usize = 0,
 
+    /// Lookup archetypes by the hash of component ids
     archetype_index: std.StringHashMap(*Archetype),
 
+    /// Lookup the archetype and the row withing the archetype of entity
     entity_records: std.AutoHashMap(usize, EntityRecord),
 
+    /// Lookup archetypes that hold a component
     component_to_archetype: std.StringHashMap(ArchetypeSet),
 
+    /// List of systems
     systems: std.ArrayList(System),
+
+    /// Maps each archetype to an other based on an added or removed component
+    // archetype_add_map: std.AutoHashMap(*Archetype, std.StringHashMap(*Archetype)),
+    // archetype_remove_map: std.AutoHashMap(*Archetype, std.StringHashMap(*Archetype)),
 
     const EntityRecord = struct {
         row: usize,
@@ -23,6 +34,81 @@ pub const ZCS = struct {
     };
 
     const Self = @This();
+
+    /// Adds a compnent to an entitiy
+    pub fn add_component_to_entity(self: *Self, entity_id: usize, component: anytype) !void {
+        // This is done by copying the compnents of the entity into a new archetype
+        // that holds an extra set of compnents
+
+        // The type of the new component
+        const new_comp_type = @TypeOf(component);
+        // The id of the new component
+        const new_comp_id = @typeName(new_comp_type);
+
+        // The record for the entity
+        var record_ptr: *EntityRecord = self.entity_records.getPtr(entity_id).?;
+        const src_arch_ptr = record_ptr.archetype;
+        const row = record_ptr.row;
+
+        // Get the component ids of the target archetype
+        var target_component_ids = try self.allocator.alloc(
+            []const u8,
+            src_arch_ptr.components_map.count() + 1,
+        );
+        defer self.allocator.free(target_component_ids);
+        var src_key_iter = src_arch_ptr.components_map.keyIterator();
+        var index: usize = 0;
+        while (src_key_iter.next()) |key_ptr| {
+            target_component_ids[index] = key_ptr.*;
+            index += 1;
+        }
+        target_component_ids[target_component_ids.len - 1] = new_comp_id;
+
+        // Get the id of the target archetype from hash of component ids
+        const target_arch_id = util.getArchetypeIdFromStrings(target_component_ids);
+        const target_arch_ptr = self.archetype_index.get(&target_arch_id) orelse blk: {
+            // If a matching archetype doesn't exist, create it by shallow copying
+            // the current one and adding an extra component list
+            const temp_arch_ptr = try self.allocator.create(Archetype);
+            //temp_arch_ptr.* = src_arch_ptr.initArchetypeWithExtraComponent(component);
+            temp_arch_ptr.* = src_arch_ptr.shallowCopy();
+            const new_list = try ComponentList.init(self.allocator, new_comp_type);
+            try temp_arch_ptr.components_map.put(new_comp_id, new_list);
+
+            try self.archetype_index.put(&target_arch_id, temp_arch_ptr);
+            if (self.component_to_archetype.getPtr(new_comp_id)) |set| {
+                try set.put(temp_arch_ptr, {});
+            } else {
+                var new_set = ArchetypeSet.init(self.allocator);
+                try new_set.put(temp_arch_ptr, {});
+                try self.component_to_archetype.put(new_comp_id, new_set);
+            }
+
+            break :blk temp_arch_ptr;
+        };
+
+        // fix the component map for the old components
+        src_key_iter = src_arch_ptr.components_map.keyIterator();
+        while (src_key_iter.next()) |key| {
+            if (std.mem.eql(u8, key.*, Archetype.entity_id_key)) continue;
+            try self.component_to_archetype.getPtr(key.*).?.put(target_arch_ptr, {});
+        }
+
+        // Move the existing components from the source map to the target map by copying
+        var src_entry_iter = src_arch_ptr.components_map.iterator();
+        while (src_entry_iter.next()) |entry| {
+            const comp_ptr = entry.value_ptr.*.get(row);
+            try target_arch_ptr.components_map.getPtr(entry.key_ptr.*).?.append(comp_ptr);
+            entry.value_ptr.*.remove(row);
+        }
+
+        // Add the new component to the relevant component list
+        try target_arch_ptr.components_map.getPtr(new_comp_id).?.append(@constCast(@ptrCast(&component)));
+
+        // Update the entity record
+        const new_row = target_arch_ptr.entityCount() - 1;
+        record_ptr.row = new_row;
+    }
 
     pub fn init(allocator: std.mem.Allocator) Self {
         const archetype_index = std.StringHashMap(*Archetype).init(allocator);
@@ -57,6 +143,10 @@ pub const ZCS = struct {
 
     /// Creates an entity from a collection of components and returns its id
     pub fn createEntity(self: *Self, comptime components: anytype) !usize {
+        // set the entity id and the count
+        self.entity_count += 1;
+        const entity_id = self.entity_count;
+
         // Check if the type of the input is correct
         const input_type = @TypeOf(components);
         const type_info = @typeInfo(input_type);
@@ -74,7 +164,15 @@ pub const ZCS = struct {
             }
             break :blk temp;
         };
-        const type_names: [fields.len][]const u8 = comptime blk: {
+        const types_for_hash = comptime blk: {
+            var temp: [fields.len + 1]type = undefined;
+            for (fields, 0..) |field, i| {
+                temp[i] = field.type;
+            }
+            temp[fields.len] = EntityId;
+            break :blk temp;
+        };
+        const type_names = comptime blk: {
             var temp: [fields.len][]const u8 = undefined;
             for (fields, 0..) |field, i| {
                 temp[i] = @typeName(field.type);
@@ -83,9 +181,7 @@ pub const ZCS = struct {
         };
 
         // Get the archetype id
-        const archetype_id = comptime blk: {
-            break :blk util.getArchetypeId(types);
-        };
+        const archetype_id = comptime util.getArchetypeId(types_for_hash);
 
         // Get archetype from map if exists
         var arch_ptr = self.archetype_index.get(&archetype_id);
@@ -114,11 +210,9 @@ pub const ZCS = struct {
         }
 
         // Add entity to Archetype
-        const row = try arch_ptr.?.addEntity(components);
+        const row = try arch_ptr.?.addEntity(entity_id, components);
 
         // Add the entity to the records
-        self.entity_count += 1;
-        const entity_id = self.entity_count;
         try self.entity_records.put(entity_id, EntityRecord{
             .archetype = arch_ptr.?,
             .row = row,
@@ -141,9 +235,10 @@ pub const ZCS = struct {
             }
             var columns = self.allocator.alloc(*ArchetypeSet, param_keys.len) catch unreachable;
             defer self.allocator.free(columns);
+
             for (param_keys, 0..) |key, i| {
                 // this needs to be made more robost (*const)
-                const key_parsed = key[1..];
+                const key_parsed = if (key[0] == '*') key[1..] else key;
                 columns[i] = self.component_to_archetype.getPtr(key_parsed).?;
             }
             var query_results = ArchetypeSet.init(self.allocator);
@@ -155,7 +250,7 @@ pub const ZCS = struct {
             );
             var result_iter = query_results.keyIterator();
             while (result_iter.next()) |arch_ptr| {
-                for (0..arch_ptr.*.count()) |row| {
+                for (0..arch_ptr.*.entityCount()) |row| {
                     var fn_params = self.allocator.alloc(*anyopaque, param_keys.len) catch unreachable;
                     defer self.allocator.free(fn_params);
                     for (param_keys, 0..) |key, i| {
@@ -169,6 +264,10 @@ pub const ZCS = struct {
     }
 };
 
+//
+// THE ROW INDEXES WILL BREAK WHEN REMOVING COMPONENTS ON ADD COMPONENT CALL
+//
+
 const Position = struct {
     x: usize = 0,
     y: usize = 0,
@@ -181,12 +280,13 @@ const Velocity = struct {
     dz: usize = 1,
 };
 
-fn testSystem(pos: *Position, accel: *Velocity) void {
+// TODO: Fix entity id as special value
+fn testSystem(id: EntityId, pos: *Position, accel: *Velocity) void {
     pos.x += accel.dx;
     pos.y += accel.dy;
     pos.z += accel.dz;
 
-    std.debug.print("position: {any}\n", .{pos});
+    std.debug.print("id: {d}, position: {any}\n", .{ id, pos });
 }
 
 test "zcs" {
@@ -197,7 +297,8 @@ test "zcs" {
     const position = Position{};
     const acceleration = Velocity{};
 
-    _ = try zcs.createEntity(.{ position, acceleration });
+    const id = try zcs.createEntity(.{position});
+    try zcs.add_component_to_entity(id, acceleration);
 
     zcs.registerSystem(testSystem);
 

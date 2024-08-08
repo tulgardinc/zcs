@@ -10,7 +10,7 @@ pub fn stringSort(strings: [][]const u8) void {
 const Md5 = std.crypto.hash.Md5;
 pub fn hashStrings(strings: [][]const u8) [Md5.digest_length]u8 {
     var hasher = Md5.init(.{});
-    inline for (strings) |string| {
+    for (strings) |string| {
         hasher.update(string);
     }
     var hash: [Md5.digest_length]u8 = undefined;
@@ -24,7 +24,12 @@ pub fn getArchetypeId(comptime types: anytype) [Md5.digest_length]u8 {
         names[i] = @typeName(T);
     }
     stringSort(&names);
-    return hashStrings(&names);
+    return comptime hashStrings(&names);
+}
+
+pub fn getArchetypeIdFromStrings(types: [][]const u8) [Md5.digest_length]u8 {
+    stringSort(types);
+    return hashStrings(types);
 }
 
 pub fn getCompnentId(comptime T: type) [Md5.digest_length]u8 {

@@ -42,5 +42,7 @@ pub fn main() void {
 - Ability to add and remove components from entites.
 - Ability to remove entities.
 - Support for `*const` pointers in system component queries.
+- Ability to query components.
+- Negative queries in systems.
 - Running systems in parallel.
     - Ability to add groups that determine the run order of systems.
