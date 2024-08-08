@@ -4,7 +4,7 @@ A dead simple entity component system written in Zig.
 This is currently just a toy project.
 ## Example
 ```zig
-// defined components
+// define components
 struct Position {
     x: usize = 0,
     y: usize = 0,
