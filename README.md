@@ -43,6 +43,7 @@ pub fn main() !void {
 - [x] Ability to remove entities.
 - [x] Support for `*const` pointers in system component queries.
 - [x] Ability to query entities from component types.
-- [ ] Negative queries in systems.
+    - [ ] Entity queries with exclusion.
+- [x] System queries with exclusion.
 - [ ] Running systems in parallel.
     - [ ] Ability to add groups that determine the run order of systems.
