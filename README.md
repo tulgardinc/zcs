@@ -41,7 +41,7 @@ pub fn main() !void {
 }
 ```
 
-## Future Plans
+## Features
 - [x] Ability to add and remove components from entites.
 - [x] Ability to remove entities.
 - [x] Support for `*const` pointers in system component queries.
