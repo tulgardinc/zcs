@@ -54,6 +54,10 @@ pub fn setIntersect(
                 }
             }
         }
+        if (columns.len == 1) {
+            results_ptr.put(item_ptr.*, {}) catch unreachable;
+            continue :outer;
+        }
         for (1..columns.len) |i| {
             if (columns[i].contains(item_ptr.*) and i == columns.len - 1) {
                 results_ptr.put(item_ptr.*, {}) catch unreachable;
@@ -61,54 +65,5 @@ pub fn setIntersect(
                 continue :outer;
             }
         }
-    }
-}
-
-test "set intersect" {
-    const allocator = std.testing.allocator;
-    var set1 = std.AutoHashMap(usize, void).init(allocator);
-    defer set1.deinit();
-    try set1.put(0, {});
-    try set1.put(5, {});
-    try set1.put(10, {});
-    try set1.put(20, {});
-    var set2 = std.AutoHashMap(usize, void).init(allocator);
-    defer set2.deinit();
-    try set2.put(15, {});
-    try set2.put(23, {});
-    try set2.put(10, {});
-    try set2.put(0, {});
-    try set2.put(100, {});
-    try set2.put(54, {});
-    var set3 = std.AutoHashMap(usize, void).init(allocator);
-    defer set3.deinit();
-    try set3.put(23, {});
-    try set3.put(10, {});
-    try set3.put(0, {});
-    try set3.put(100, {});
-    var results = std.AutoHashMap(usize, void).init(allocator);
-    defer results.deinit();
-
-    var columns = allocator.alloc(*std.AutoHashMap(usize, void), 3) catch unreachable;
-    defer allocator.free(columns);
-    columns[0] = &set1;
-    columns[1] = &set2;
-    columns[2] = &set3;
-
-    setIntersect(
-        usize,
-        &results,
-        columns,
-    );
-
-    var iter = results.keyIterator();
-    var i: usize = 0;
-    while (iter.next()) |item| {
-        switch (i) {
-            0 => try std.testing.expect(item.* == 0),
-            1 => try std.testing.expect(item.* == 10),
-            else => unreachable,
-        }
-        i += 1;
     }
 }

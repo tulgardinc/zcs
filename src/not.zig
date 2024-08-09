@@ -39,16 +39,3 @@ pub fn Not(comptime query: anytype) type {
         },
     });
 }
-
-test "main" {
-    comptime {
-        const not = Not(.{ usize, bool });
-
-        @compileLog(not);
-
-        const fields = std.meta.fields(not);
-        for (fields) |f| {
-            @compileLog(f.name);
-        }
-    }
-}

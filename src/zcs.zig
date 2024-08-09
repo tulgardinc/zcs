@@ -380,11 +380,14 @@ pub const ZCS = struct {
         }
     }
 
-    pub fn entity_query(self: *Self, result_list: *std.ArrayList(usize), comptime query: anytype) !void {
+    pub fn entity_query(self: *Self, result_list_ptr: *std.ArrayList(usize), comptime query: anytype, comptime exclude: anytype) !void {
         const query_info = @typeInfo(@TypeOf(query));
-        if (query_info != .Struct or !query_info.Struct.is_tuple) @compileError("A query has to be a tuple of types");
-        const fields = query_info.Struct.fields;
+        const exclude_info = @typeInfo(@TypeOf(exclude));
 
+        if (query_info != .Struct or !query_info.Struct.is_tuple) @compileError("A query has to be a tuple of types");
+        if (exclude_info != .Struct or !query_info.Struct.is_tuple) @compileError("A query has to be a tuple of types");
+
+        const fields = query_info.Struct.fields;
         const comp_ids = comptime blk: {
             var temp: [fields.len][]const u8 = undefined;
             for (0..temp.len) |i| {
@@ -402,9 +405,32 @@ pub const ZCS = struct {
             }
         }
 
+        const exclude_fields = exclude_info.Struct.fields;
+        const exclude_ids = comptime blk: {
+            var temp: [exclude_fields.len][]const u8 = undefined;
+            for (0..temp.len) |i| {
+                temp[i] = @typeName(exclude[i]);
+            }
+            break :blk temp;
+        };
+
+        var exclude_columns: [exclude_ids.len]*ArchetypeSet = undefined;
+        for (0..exclude_columns.len) |i| {
+            if (self.component_to_archetype.getPtr(exclude_ids[i])) |set| {
+                exclude_columns[i] = set;
+            } else {
+                return;
+            }
+        }
+
         var intersect_result_set = ArchetypeSet.init(self.allocator);
         defer intersect_result_set.deinit();
-        util.setIntersect(*Archetype, &intersect_result_set, &columns);
+        util.setIntersect(
+            *Archetype,
+            &intersect_result_set,
+            &columns,
+            &exclude_columns,
+        );
 
         var result_iter = intersect_result_set.keyIterator();
         while (result_iter.next()) |arch_ptr_ptr| {
@@ -412,7 +438,7 @@ pub const ZCS = struct {
             const len = id_list.getLen();
             for (0..len) |i| {
                 const e_id: *EntityId = @ptrCast(@alignCast(id_list.get(i)));
-                try result_list.append(e_id.id);
+                try result_list_ptr.append(e_id.id);
             }
         }
     }
@@ -477,7 +503,7 @@ test "query" {
 
     var query_results = std.ArrayList(usize).init(allocator);
     defer query_results.deinit();
-    try zcs.entity_query(&query_results, .{ Position, Velocity });
+    try zcs.entity_query(&query_results, .{ Position, Velocity }, .{});
 
     try std.testing.expect(query_results.items.len == 3);
     try std.testing.expect(query_results.items[0] == 1);
@@ -491,6 +517,25 @@ fn testSystemNegative(id: *const EntityId, pos: *Position, vel: *Velocity, _: No
     pos.z += vel.dz;
 
     std.debug.print("id: {d}, position: {any}\n", .{ id.id, pos });
+}
+
+test "negative system query" {
+    const allocator = std.testing.allocator;
+    var zcs = ZCS.init(allocator);
+    defer zcs.deinit();
+
+    const position = Position{};
+    const acceleration = Velocity{};
+    const useless = Useless{};
+
+    _ = try zcs.createEntity(.{ position, acceleration, useless });
+    _ = try zcs.createEntity(.{ position, acceleration, useless });
+    _ = try zcs.createEntity(.{ position, acceleration });
+    _ = try zcs.createEntity(.{ position, acceleration });
+
+    zcs.registerSystem(testSystemNegative);
+
+    try zcs.runSystems();
 }
 
 test "negative query" {
@@ -507,7 +552,13 @@ test "negative query" {
     _ = try zcs.createEntity(.{ position, acceleration });
     _ = try zcs.createEntity(.{ position, acceleration });
 
-    zcs.registerSystem(testSystemNegative);
+    var results = std.ArrayList(usize).init(allocator);
+    defer results.deinit();
+
+    try zcs.entity_query(&results, .{Position}, .{Useless});
+
+    try std.testing.expect(results.items[0] == 3);
+    try std.testing.expect(results.items[1] == 4);
 
     try zcs.runSystems();
 }
