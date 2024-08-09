@@ -35,6 +35,37 @@ pub const ZCS = struct {
 
     const Self = @This();
 
+    pub fn init(allocator: std.mem.Allocator) Self {
+        const archetype_index = std.StringHashMap(*Archetype).init(allocator);
+        const entity_records = std.AutoHashMap(usize, EntityRecord).init(allocator);
+        const component_to_archetype = std.StringHashMap(ArchetypeSet).init(allocator);
+        const systems = std.ArrayList(System).init(allocator);
+
+        return Self{
+            .archetype_index = archetype_index,
+            .entity_records = entity_records,
+            .component_to_archetype = component_to_archetype,
+            .allocator = allocator,
+            .systems = systems,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        var arch_iter = self.archetype_index.valueIterator();
+        while (arch_iter.next()) |arch_ptr_ptr| {
+            arch_ptr_ptr.*.deinit();
+            self.allocator.destroy(arch_ptr_ptr.*);
+        }
+        self.archetype_index.deinit();
+        self.entity_records.deinit();
+        var arch_set_iter = self.component_to_archetype.valueIterator();
+        while (arch_set_iter.next()) |arch_set_ptr| {
+            arch_set_ptr.deinit();
+        }
+        self.component_to_archetype.deinit();
+        self.systems.deinit();
+    }
+
     /// Adds a compnent to an entitiy
     pub fn add_component_to_entity(self: *Self, entity_id: usize, component: anytype) !void {
         // This is done by copying the compnents of the entity into a new archetype
@@ -195,37 +226,6 @@ pub const ZCS = struct {
         record_ptr.archetype = target_arch_ptr;
     }
 
-    pub fn init(allocator: std.mem.Allocator) Self {
-        const archetype_index = std.StringHashMap(*Archetype).init(allocator);
-        const entity_records = std.AutoHashMap(usize, EntityRecord).init(allocator);
-        const component_to_archetype = std.StringHashMap(ArchetypeSet).init(allocator);
-        const systems = std.ArrayList(System).init(allocator);
-
-        return Self{
-            .archetype_index = archetype_index,
-            .entity_records = entity_records,
-            .component_to_archetype = component_to_archetype,
-            .allocator = allocator,
-            .systems = systems,
-        };
-    }
-
-    pub fn deinit(self: *Self) void {
-        var arch_iter = self.archetype_index.valueIterator();
-        while (arch_iter.next()) |arch_ptr_ptr| {
-            arch_ptr_ptr.*.deinit();
-            self.allocator.destroy(arch_ptr_ptr.*);
-        }
-        self.archetype_index.deinit();
-        self.entity_records.deinit();
-        var arch_set_iter = self.component_to_archetype.valueIterator();
-        while (arch_set_iter.next()) |arch_set_ptr| {
-            arch_set_ptr.deinit();
-        }
-        self.component_to_archetype.deinit();
-        self.systems.deinit();
-    }
-
     /// Creates an entity from a collection of components and returns its id
     pub fn createEntity(self: *Self, comptime components: anytype) !usize {
         // set the entity id and the count
@@ -350,6 +350,43 @@ pub const ZCS = struct {
             }
         }
     }
+
+    pub fn entity_query(self: *Self, result_list: *std.ArrayList(usize), comptime query: anytype) !void {
+        const query_info = @typeInfo(@TypeOf(query));
+        if (query_info != .Struct or !query_info.Struct.is_tuple) @compileError("A query has to be a tuple of types");
+        const fields = query_info.Struct.fields;
+
+        const comp_ids = comptime blk: {
+            var temp: [fields.len][]const u8 = undefined;
+            for (0..temp.len) |i| {
+                temp[i] = @typeName(query[i]);
+            }
+            break :blk temp;
+        };
+
+        var columns: [comp_ids.len]*ArchetypeSet = undefined;
+        for (0..columns.len) |i| {
+            if (self.component_to_archetype.getPtr(comp_ids[i])) |set| {
+                columns[i] = set;
+            } else {
+                return;
+            }
+        }
+
+        var intersect_result_set = ArchetypeSet.init(self.allocator);
+        defer intersect_result_set.deinit();
+        util.setIntersect(*Archetype, &intersect_result_set, &columns);
+
+        var result_iter = intersect_result_set.keyIterator();
+        while (result_iter.next()) |arch_ptr_ptr| {
+            const id_list = arch_ptr_ptr.*.components_map.get(Archetype.entity_id_key).?;
+            const len = id_list.getLen();
+            for (0..len) |i| {
+                const e_id: *EntityId = @ptrCast(@alignCast(id_list.get(i)));
+                try result_list.append(e_id.id);
+            }
+        }
+    }
 };
 
 const Position = struct {
@@ -395,4 +432,26 @@ test "zcs" {
     try zcs.runSystems();
     try zcs.runSystems();
     try zcs.runSystems();
+}
+
+test "query" {
+    const allocator = std.testing.allocator;
+    var zcs = ZCS.init(allocator);
+    defer zcs.deinit();
+
+    const position = Position{};
+    const acceleration = Velocity{};
+
+    _ = try zcs.createEntity(.{ position, acceleration });
+    _ = try zcs.createEntity(.{ position, acceleration });
+    _ = try zcs.createEntity(.{ position, acceleration });
+
+    var query_results = std.ArrayList(usize).init(allocator);
+    defer query_results.deinit();
+    try zcs.entity_query(&query_results, .{ Position, Velocity });
+
+    try std.testing.expect(query_results.items.len == 3);
+    try std.testing.expect(query_results.items[0] == 1);
+    try std.testing.expect(query_results.items[1] == 2);
+    try std.testing.expect(query_results.items[2] == 3);
 }
