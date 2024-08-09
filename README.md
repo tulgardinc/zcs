@@ -25,24 +25,24 @@ fn movementSystem(pos: *Position, vel: *Velocity) void {
 }
 
 // register the entities/systems and run the game loop
-pub fn main() void {
+pub fn main() !void {
     zcs = ZCS.init(alloc);
 
     _ = zcs.addEntity(Position {}, Velocity {});
 
-    zcs.registerSystem(movementSystem);
+    try zcs.registerSystem(movementSystem);
 
     while (true) {
-        zcs.runSystems();
+        try zcs.runSystems();
     }
 }
 ```
 
-## Futue Plans
-- Ability to add and remove components from entites.
-- Ability to remove entities.
-- Support for `*const` pointers in system component queries.
-- Ability to query components.
-- Negative queries in systems.
-- Running systems in parallel.
-    - Ability to add groups that determine the run order of systems.
+## Future Plans
+- [x] Ability to add and remove components from entites.
+- [x] Ability to remove entities.
+- [x] Support for `*const` pointers in system component queries.
+- [ ] Ability to query components.
+- [ ] Negative queries in systems.
+- [ ] Running systems in parallel.
+    - [ ] Ability to add groups that determine the run order of systems.
