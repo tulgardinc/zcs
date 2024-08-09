@@ -66,6 +66,7 @@ pub const ComponentList = struct {
         return self.getLen_fn(self.ptr);
     }
 
+    /// Returns the entity id of the new entity
     pub fn remove(self: *Self, index: usize) void {
         return self.remove_fn(self.ptr, index);
     }
@@ -96,7 +97,7 @@ pub const ComponentList = struct {
 
             pub fn removeFn(input_ptr: *anyopaque, row: usize) void {
                 const list_ptr: *std.ArrayList(T) = @ptrCast(@alignCast(input_ptr));
-                _ = list_ptr.orderedRemove(row);
+                _ = list_ptr.swapRemove(row);
             }
 
             pub fn shallowCopyFn(allocator: std.mem.Allocator) *anyopaque {

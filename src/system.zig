@@ -1,4 +1,5 @@
 const std = @import("std");
+const EntityId = @import("zcs.zig").EntityId;
 
 /// Describes an individual system that executes operations on components.
 /// This struct takes a function that receives pointers to compnents as parameters
@@ -12,8 +13,10 @@ pub const System = struct {
     const Self = @This();
 
     pub fn init(comptime func: anytype) Self {
+        checkInputValidity(func);
         const Methods = GenFn(func);
         const keys = comptime genTypeNames(func);
+
         return Self{
             .run_fn = Methods.run,
             .param_keys = keys,
@@ -23,6 +26,25 @@ pub const System = struct {
     /// Runs the system with given parameter array
     pub fn run(self: *const Self, params: []*anyopaque) void {
         self.run_fn(params);
+    }
+
+    fn checkInputValidity(comptime func: anytype) void {
+        const T = @TypeOf(func);
+        const func_info = @typeInfo(T);
+
+        if (func_info != .Fn) @compileError("Systems must be created with functions");
+
+        const args = std.meta.ArgsTuple(T);
+
+        const Type = std.builtin.Type;
+        // Get inputs of the function as a tuple
+        const input_fields: []const Type.StructField = std.meta.fields(args);
+
+        inline for (input_fields) |field| {
+            const field_info = @typeInfo(field.type);
+            if (field_info != .Pointer) @compileError("System parameters have to be pointers");
+            if (field.type == *EntityId) @compileError("EntityId parameter must be of type const pointer ");
+        }
     }
 
     /// Generates the type names for the parameters
@@ -38,7 +60,9 @@ pub const System = struct {
         const parameter_type_names = comptime blk: {
             var temp: [input_fields.len][]const u8 = undefined;
             for (input_fields, 0..) |input_field, i| {
-                temp[i] = @typeName(input_field.type);
+                const type_info = @typeInfo(input_field.type);
+                const key = @typeName(type_info.Pointer.child);
+                temp[i] = key;
             }
             break :blk temp;
         };
@@ -46,7 +70,7 @@ pub const System = struct {
         return &parameter_type_names;
     }
 
-    /// Generates teh run function
+    /// Generates the run function
     fn GenFn(comptime func: anytype) type {
         return struct {
             pub fn run(params: []*anyopaque) void {

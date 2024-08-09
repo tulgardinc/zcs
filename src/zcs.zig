@@ -48,7 +48,7 @@ pub const ZCS = struct {
         // The record for the entity
         var record_ptr: *EntityRecord = self.entity_records.getPtr(entity_id).?;
         const src_arch_ptr = record_ptr.archetype;
-        const row = record_ptr.row;
+        const old_row = record_ptr.row;
 
         // Get the component ids of the target archetype
         var target_component_ids = try self.allocator.alloc(
@@ -97,9 +97,14 @@ pub const ZCS = struct {
         // Move the existing components from the source map to the target map by copying
         var src_entry_iter = src_arch_ptr.components_map.iterator();
         while (src_entry_iter.next()) |entry| {
-            const comp_ptr = entry.value_ptr.*.get(row);
+            const comp_ptr = entry.value_ptr.*.get(old_row);
             try target_arch_ptr.components_map.getPtr(entry.key_ptr.*).?.append(comp_ptr);
-            entry.value_ptr.*.remove(row);
+            entry.value_ptr.*.remove(old_row);
+            const id_list = src_arch_ptr.components_map.get(Archetype.entity_id_key).?;
+            if (id_list.getLen() > 0) {
+                const filled_entity_id: *EntityId = @ptrCast(@alignCast(id_list.get(old_row)));
+                self.entity_records.getPtr(filled_entity_id.id).?.row = old_row;
+            }
         }
 
         // Add the new component to the relevant component list
@@ -226,27 +231,27 @@ pub const ZCS = struct {
         self.systems.append(sys) catch unreachable;
     }
 
-    pub fn runSystems(self: *Self) void {
+    pub fn runSystems(self: *Self) !void {
         for (self.systems.items) |sys| {
             const param_keys = sys.param_keys;
             if (param_keys.len == 0) {
                 sys.run(&[_]*anyopaque{});
                 continue;
             }
-            var columns = self.allocator.alloc(*ArchetypeSet, param_keys.len) catch unreachable;
-            defer self.allocator.free(columns);
 
-            for (param_keys, 0..) |key, i| {
-                // this needs to be made more robost (*const)
-                const key_parsed = if (key[0] == '*') key[1..] else key;
-                columns[i] = self.component_to_archetype.getPtr(key_parsed).?;
+            var columns = std.ArrayList(*ArchetypeSet).init(self.allocator);
+            defer columns.deinit();
+
+            for (param_keys) |key| {
+                if (std.mem.eql(u8, key, Archetype.entity_id_key)) continue;
+                try columns.append(self.component_to_archetype.getPtr(key).?);
             }
             var query_results = ArchetypeSet.init(self.allocator);
             defer query_results.deinit();
             util.setIntersect(
                 *Archetype,
                 &query_results,
-                columns,
+                columns.items,
             );
             var result_iter = query_results.keyIterator();
             while (result_iter.next()) |arch_ptr| {
@@ -254,8 +259,7 @@ pub const ZCS = struct {
                     var fn_params = self.allocator.alloc(*anyopaque, param_keys.len) catch unreachable;
                     defer self.allocator.free(fn_params);
                     for (param_keys, 0..) |key, i| {
-                        const key_parsed = key[1..];
-                        fn_params[i] = arch_ptr.*.components_map.get(key_parsed).?.get(row);
+                        fn_params[i] = arch_ptr.*.components_map.get(key).?.get(row);
                     }
                     sys.run(fn_params);
                 }
@@ -263,10 +267,6 @@ pub const ZCS = struct {
         }
     }
 };
-
-//
-// THE ROW INDEXES WILL BREAK WHEN REMOVING COMPONENTS ON ADD COMPONENT CALL
-//
 
 const Position = struct {
     x: usize = 0,
@@ -281,12 +281,12 @@ const Velocity = struct {
 };
 
 // TODO: Fix entity id as special value
-fn testSystem(id: EntityId, pos: *Position, accel: *Velocity) void {
+fn testSystem(id: *const EntityId, pos: *Position, accel: *Velocity) void {
     pos.x += accel.dx;
     pos.y += accel.dy;
     pos.z += accel.dz;
 
-    std.debug.print("id: {d}, position: {any}\n", .{ id, pos });
+    std.debug.print("id: {d}, position: {any}\n", .{ id.id, pos });
 }
 
 test "zcs" {
@@ -302,8 +302,8 @@ test "zcs" {
 
     zcs.registerSystem(testSystem);
 
-    zcs.runSystems();
-    zcs.runSystems();
-    zcs.runSystems();
-    zcs.runSystems();
+    try zcs.runSystems();
+    try zcs.runSystems();
+    try zcs.runSystems();
+    try zcs.runSystems();
 }
