@@ -43,9 +43,17 @@ pub fn setIntersect(
     comptime T: type,
     results_ptr: *std.AutoHashMap(T, void),
     columns: []*const std.AutoHashMap(T, void),
+    negative_columns: ?[]*const std.AutoHashMap(T, void),
 ) void {
     var iter = columns[0].keyIterator();
     outer: while (iter.next()) |item_ptr| {
+        if (negative_columns) |cols| {
+            for (0..cols.len) |i| {
+                if (cols[i].contains(item_ptr.*)) {
+                    continue :outer;
+                }
+            }
+        }
         for (1..columns.len) |i| {
             if (columns[i].contains(item_ptr.*) and i == columns.len - 1) {
                 results_ptr.put(item_ptr.*, {}) catch unreachable;

@@ -1,5 +1,6 @@
 const std = @import("std");
 const EntityId = @import("zcs.zig").EntityId;
+const Not = @import("not.zig").Not;
 
 /// Describes an individual system that executes operations on components.
 /// This struct takes a function that receives pointers to compnents as parameters
@@ -9,17 +10,18 @@ pub const System = struct {
     run_fn: *const fn ([]*anyopaque) void,
     /// List of type names corrseponding to the parameters of the system
     param_keys: []const []const u8,
+    exclusion_keys: ?[]const []const u8,
 
     const Self = @This();
 
     pub fn init(comptime func: anytype) Self {
-        checkInputValidity(func);
+        const parameters = comptime handleParameters(func);
         const Methods = GenFn(func);
-        const keys = comptime genTypeNames(func);
 
         return Self{
             .run_fn = Methods.run,
-            .param_keys = keys,
+            .param_keys = parameters.param_keys,
+            .exclusion_keys = parameters.exclusion_keys,
         };
     }
 
@@ -28,7 +30,12 @@ pub const System = struct {
         self.run_fn(params);
     }
 
-    fn checkInputValidity(comptime func: anytype) void {
+    const ParamReturnType = struct {
+        param_keys: []const []const u8,
+        exclusion_keys: ?[]const []const u8,
+    };
+
+    fn handleParameters(comptime func: anytype) ParamReturnType {
         const T = @TypeOf(func);
         const func_info = @typeInfo(T);
 
@@ -40,34 +47,35 @@ pub const System = struct {
         // Get inputs of the function as a tuple
         const input_fields: []const Type.StructField = std.meta.fields(args);
 
+        comptime var exclusion_keys: ?[]const []const u8 = null;
+
+        comptime var param_keys: []const []const u8 = &.{};
+
         inline for (input_fields) |field| {
             const field_info = @typeInfo(field.type);
-            if (field_info != .Pointer) @compileError("System parameters have to be pointers");
-            if (field.type == *EntityId) @compileError("EntityId parameter must be of type const pointer ");
-        }
-    }
-
-    /// Generates the type names for the parameters
-    fn genTypeNames(comptime func: anytype) []const []const u8 {
-        const T = @TypeOf(func);
-        const args = std.meta.ArgsTuple(T);
-
-        const Type = std.builtin.Type;
-        // Get inputs of the function as a tuple
-        const input_fields: []const Type.StructField = std.meta.fields(args);
-
-        // Extract the parameter names from the tuple
-        const parameter_type_names = comptime blk: {
-            var temp: [input_fields.len][]const u8 = undefined;
-            for (input_fields, 0..) |input_field, i| {
-                const type_info = @typeInfo(input_field.type);
-                const key = @typeName(type_info.Pointer.child);
-                temp[i] = key;
+            if (field_info == .Struct and @hasField(field.type, "not")) outer: {
+                const not_fields = field_info.Struct.fields;
+                comptime var temp_negatives: []const []const u8 = &.{};
+                inline for (not_fields) |not_field| {
+                    if (not_field.type != void) {
+                        break :outer;
+                    }
+                    if (std.mem.eql(u8, not_field.name, "not")) continue;
+                    temp_negatives = temp_negatives ++ .{not_field.name};
+                }
+                exclusion_keys = temp_negatives;
+                continue;
             }
-            break :blk temp;
-        };
+            if (field_info != .Pointer) @compileError("System parameters have to be pointers");
+            if (field.type == *EntityId) @compileError("EntityId parameter must be of type const pointer");
 
-        return &parameter_type_names;
+            param_keys = param_keys ++ .{@typeName(field.type)};
+        }
+
+        return ParamReturnType{
+            .param_keys = param_keys,
+            .exclusion_keys = exclusion_keys,
+        };
     }
 
     /// Generates the run function

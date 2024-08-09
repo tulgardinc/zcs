@@ -13,8 +13,6 @@ pub const Archetype = struct {
     pub const entity_id_key = @typeName(EntityId);
 
     pub fn init(allocator: std.mem.Allocator, comptime types: anytype) !Self {
-        //if (@typeInfo(@TypeOf(types)) != .Array) @compileError("Wrong type of argument");
-
         var comp_map = std.StringHashMap(ComponentList).init(allocator);
 
         // Genereate component lists

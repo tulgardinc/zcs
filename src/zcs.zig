@@ -3,6 +3,7 @@ const Archetype = @import("archetype.zig").Archetype;
 const ComponentList = @import("component_list.zig").ComponentList;
 const System = @import("system.zig").System;
 const util = @import("util.zig");
+const Not = @import("not.zig").Not;
 
 const ArchetypeSet = std.AutoHashMap(*Archetype, void);
 
@@ -314,6 +315,8 @@ pub const ZCS = struct {
     pub fn runSystems(self: *Self) !void {
         outer: for (self.systems.items) |sys| {
             const param_keys = sys.param_keys;
+            const exclusion_query = sys.exclusion_query;
+
             if (param_keys.len == 0) {
                 sys.run(&[_]*anyopaque{});
                 continue;
@@ -330,12 +333,27 @@ pub const ZCS = struct {
                     continue :outer;
                 }
             }
+
+            var negative_input_list = std.ArrayList(*ArchetypeSet).init(self.allocator);
+            defer negative_input_list.deinit();
+            if (exclusion_query) |query_keys| {
+                for (query_keys) |key| {
+                    if (self.component_to_archetype.getPtr(key)) |set| {
+                        try negative_input_list.append(set);
+                    } else {
+                        continue :outer;
+                    }
+                }
+            }
+            const negative_input: ?[]*const ArchetypeSet = if (negative_input_list.items.len == 0) null else negative_input_list.items;
+
             var query_results = ArchetypeSet.init(self.allocator);
             defer query_results.deinit();
             util.setIntersect(
                 *Archetype,
                 &query_results,
                 columns.items,
+                negative_input,
             );
             var result_iter = query_results.keyIterator();
             while (result_iter.next()) |arch_ptr| {
@@ -403,10 +421,10 @@ const Velocity = struct {
 
 const Useless = struct {};
 
-fn testSystem(id: *const EntityId, pos: *Position, accel: *Velocity) void {
-    pos.x += accel.dx;
-    pos.y += accel.dy;
-    pos.z += accel.dz;
+fn testSystem(id: *const EntityId, pos: *Position, vel: *Velocity) void {
+    pos.x += vel.dx;
+    pos.y += vel.dy;
+    pos.z += vel.dz;
 
     std.debug.print("id: {d}, position: {any}\n", .{ id.id, pos });
 }
@@ -454,4 +472,31 @@ test "query" {
     try std.testing.expect(query_results.items[0] == 1);
     try std.testing.expect(query_results.items[1] == 2);
     try std.testing.expect(query_results.items[2] == 3);
+}
+
+fn testSystemNegative(id: *const EntityId, pos: *Position, vel: *Velocity, _: Not(.{Useless})) void {
+    pos.x += vel.dx;
+    pos.y += vel.dy;
+    pos.z += vel.dz;
+
+    std.debug.print("id: {d}, position: {any}\n", .{ id.id, pos });
+}
+
+test "negative query" {
+    const allocator = std.testing.allocator;
+    var zcs = ZCS.init(allocator);
+    defer zcs.deinit();
+
+    const position = Position{};
+    const acceleration = Velocity{};
+    const useless = Useless{};
+
+    _ = try zcs.createEntity(.{ position, acceleration, useless });
+    _ = try zcs.createEntity(.{ position, acceleration, useless });
+    _ = try zcs.createEntity(.{ position, acceleration });
+    _ = try zcs.createEntity(.{ position, acceleration });
+
+    zcs.registerSystem(testSystemNegative);
+
+    try zcs.runSystems();
 }
