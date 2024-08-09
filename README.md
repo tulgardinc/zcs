@@ -5,20 +5,22 @@ This is currently just a toy project.
 ## Example
 ```zig
 // define components
-struct Position {
+const Position = struct {
     x: usize = 0,
     y: usize = 0,
     z: usize = 0,
 }
 
-struct Velocity {
+const Velocity = struct {
     dx: usize = 1,
     dy: usize = 1,
     dz: usize = 1,
 }
 
+const Useless = struct {};
+
 // define systems
-fn movementSystem(pos: *Position, vel: *Velocity) void {
+fn movementSystem(pos: *Position, vel: *const Velocity, _: Not(.{Useless})) void {
     pos.x += vel.dx;
     pos.y += vel.dy;
     pos.z += vel.dz;
@@ -28,7 +30,8 @@ fn movementSystem(pos: *Position, vel: *Velocity) void {
 pub fn main() !void {
     zcs = ZCS.init(alloc);
 
-    _ = zcs.addEntity(Position {}, Velocity {});
+    const id = zcs.createEntity(.{ Position {} });
+    zcs.add_component_to_entity(id, Velocity {});
 
     try zcs.registerSystem(movementSystem);
 
