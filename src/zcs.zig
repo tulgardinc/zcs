@@ -312,10 +312,17 @@ pub const ZCS = struct {
         self.systems.append(sys) catch unreachable;
     }
 
+    fn debugPrintALlComponents(self: *Self) void {
+        var key_iter = self.component_to_archetype.keyIterator();
+        while (key_iter.next()) |key| {
+            std.debug.print("components: {s}\n", .{key.*});
+        }
+    }
+
     pub fn runSystems(self: *Self) !void {
         outer: for (self.systems.items) |sys| {
             const param_keys = sys.param_keys;
-            const exclusion_query = sys.exclusion_query;
+            const exclusion_keys = sys.exclusion_keys;
 
             if (param_keys.len == 0) {
                 sys.run(&[_]*anyopaque{});
@@ -327,6 +334,7 @@ pub const ZCS = struct {
 
             for (param_keys) |key| {
                 if (std.mem.eql(u8, key, Archetype.entity_id_key)) continue;
+                if (std.mem.eql(u8, key, "Not")) continue;
                 if (self.component_to_archetype.getPtr(key)) |set| {
                     try columns.append(set);
                 } else {
@@ -336,12 +344,10 @@ pub const ZCS = struct {
 
             var negative_input_list = std.ArrayList(*ArchetypeSet).init(self.allocator);
             defer negative_input_list.deinit();
-            if (exclusion_query) |query_keys| {
+            if (exclusion_keys) |query_keys| {
                 for (query_keys) |key| {
                     if (self.component_to_archetype.getPtr(key)) |set| {
                         try negative_input_list.append(set);
-                    } else {
-                        continue :outer;
                     }
                 }
             }
@@ -356,11 +362,16 @@ pub const ZCS = struct {
                 negative_input,
             );
             var result_iter = query_results.keyIterator();
+
             while (result_iter.next()) |arch_ptr| {
                 for (0..arch_ptr.*.entityCount()) |row| {
                     var fn_params = self.allocator.alloc(*anyopaque, param_keys.len) catch unreachable;
                     defer self.allocator.free(fn_params);
                     for (param_keys, 0..) |key, i| {
+                        if (std.mem.eql(u8, key, "Not")) {
+                            fn_params[i] = undefined;
+                            continue;
+                        }
                         fn_params[i] = arch_ptr.*.components_map.get(key).?.get(row);
                     }
                     sys.run(fn_params);

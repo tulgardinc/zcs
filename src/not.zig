@@ -30,8 +30,6 @@ pub fn Not(comptime query: anytype) type {
         .default_value = null,
     };
 
-    @compileLog(new_fields);
-
     return @Type(Type{
         .Struct = Type.Struct{
             .fields = &new_fields,

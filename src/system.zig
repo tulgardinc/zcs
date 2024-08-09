@@ -51,7 +51,9 @@ pub const System = struct {
 
         comptime var param_keys: []const []const u8 = &.{};
 
-        inline for (input_fields) |field| {
+        comptime var exclusion_index: usize = 0;
+
+        inline for (input_fields, 0..) |field, i| {
             const field_info = @typeInfo(field.type);
             if (field_info == .Struct and @hasField(field.type, "not")) outer: {
                 const not_fields = field_info.Struct.fields;
@@ -64,12 +66,15 @@ pub const System = struct {
                     temp_negatives = temp_negatives ++ .{not_field.name};
                 }
                 exclusion_keys = temp_negatives;
+                exclusion_index = i;
+                param_keys = param_keys ++ .{"Not"};
                 continue;
             }
             if (field_info != .Pointer) @compileError("System parameters have to be pointers");
             if (field.type == *EntityId) @compileError("EntityId parameter must be of type const pointer");
 
-            param_keys = param_keys ++ .{@typeName(field.type)};
+            const name = @typeName(field_info.Pointer.child);
+            param_keys = param_keys ++ .{name};
         }
 
         return ParamReturnType{
@@ -94,6 +99,11 @@ pub const System = struct {
 
                 var param_tuple: std.meta.Tuple(&types) = undefined;
                 inline for (&param_tuple, types, params) |*param, ItemTypePtr, item_ptr| {
+                    const type_info = @typeInfo(ItemTypePtr);
+                    if (type_info != .Pointer) {
+                        param.* = undefined;
+                        continue;
+                    }
                     const casted_item_ptr: ItemTypePtr = @ptrCast(@alignCast(item_ptr));
                     param.* = casted_item_ptr;
                 }
