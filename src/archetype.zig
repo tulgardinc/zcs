@@ -56,47 +56,44 @@ pub const Archetype = struct {
         };
     }
 
-    pub fn initArchetypeWithExtraComponent(self: *Self, component: anytype) Self {
-        const new_comp_id = @typeName(@TypeOf(component));
-
-        var new_components_map = std.StringHashMap(ComponentList).init(self.allocator);
-
-        var iter = self.components_map.iterator();
-        while (iter.next()) |entry| {
-            const new_list = entry.value_ptr.*.initEmptyCopy();
-            new_components_map.put(entry.key_ptr.*, new_list);
+    pub fn removeEntity(self: *Self, row: usize) void {
+        var entry_iter = self.components_map.iterator();
+        while (entry_iter.next()) |entry| {
+            self.components_map.get(entry.key_ptr.*).?.remove(row);
         }
-        new_components_map.put(new_comp_id, ComponentList.init(self.allocator, @TypeOf(component)));
-
-        return Self{
-            .components_map = new_components_map,
-            .allocator = self.allocator,
-        };
     }
 
-    pub fn initArchetypeWithRemovedComponent(self: *Self, component: anytype) Self {
-        const new_comp_id = @typeName(@TypeOf(component));
-
-        var new_components_map = std.StringHashMap(ComponentList).init(self.allocator);
-
-        var iter = self.components_map.iterator();
-        while (iter.next()) |entry| {
-            if (std.mem.eql(u8, new_comp_id, entry.key_ptr.*)) continue;
-            const new_list = entry.value_ptr.*.initEmptyCopy();
-            new_components_map.put(entry.key_ptr.*, new_list);
+    pub fn getEntity(self: *Self, row: usize, result_map: *std.StringHashMap(*anyopaque)) !void {
+        var entry_iter = self.components_map.iterator();
+        while (entry_iter.next()) |entry| {
+            const comp = entry.value_ptr.get(row);
+            try result_map.put(entry.key_ptr.*, comp);
         }
+    }
 
-        return Self{
-            .components_map = new_components_map,
-            .allocator = self.allocator,
-        };
+    pub fn addEntityRuntime(self: *Self, components: std.StringHashMap(*anyopaque)) !usize {
+        // TODO: error to make input and comp map same size with same keys
+        if (components.count() != self.components_map.count()) return error.WrongInputSize;
+        var entry_iter = components.iterator();
+        while (entry_iter.next()) |entry| {
+            if (!self.components_map.contains(entry.key_ptr.*)) return error.WrongInputKeys;
+            try self.components_map.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+        return self.entityCount() - 1;
+    }
+
+    pub fn getComponentIds(self: *Self, ids: [][]const u8) !void {
+        var key_iter = self.components_map.keyIterator();
+        var i: usize = 0;
+        while (key_iter.next()) |key| {
+            ids[i] = key.*;
+            i += 1;
+        }
     }
 
     /// Returns the amount of entities in the archetype
     pub fn entityCount(self: *Self) usize {
-        var iter = self.components_map.valueIterator();
-        const first_list = iter.next() orelse return 0;
-        return first_list.getLen();
+        return self.components_map.get(entity_id_key).?.getLen();
     }
 
     pub fn addEntity(self: *Self, id: usize, comptime components: anytype) !usize {

@@ -50,18 +50,17 @@ pub const ZCS = struct {
         const src_arch_ptr = record_ptr.archetype;
         const old_row = record_ptr.row;
 
+        var src_comps = std.StringHashMap(*anyopaque).init(self.allocator);
+        defer src_comps.deinit();
+        try src_arch_ptr.getEntity(old_row, &src_comps);
+
         // Get the component ids of the target archetype
         var target_component_ids = try self.allocator.alloc(
             []const u8,
             src_arch_ptr.components_map.count() + 1,
         );
         defer self.allocator.free(target_component_ids);
-        var src_key_iter = src_arch_ptr.components_map.keyIterator();
-        var index: usize = 0;
-        while (src_key_iter.next()) |key_ptr| {
-            target_component_ids[index] = key_ptr.*;
-            index += 1;
-        }
+        try src_arch_ptr.getComponentIds(target_component_ids);
         target_component_ids[target_component_ids.len - 1] = new_comp_id;
 
         // Get the id of the target archetype from hash of component ids
@@ -70,12 +69,14 @@ pub const ZCS = struct {
             // If a matching archetype doesn't exist, create it by shallow copying
             // the current one and adding an extra component list
             const temp_arch_ptr = try self.allocator.create(Archetype);
-            //temp_arch_ptr.* = src_arch_ptr.initArchetypeWithExtraComponent(component);
             temp_arch_ptr.* = src_arch_ptr.shallowCopy();
             const new_list = try ComponentList.init(self.allocator, new_comp_type);
             try temp_arch_ptr.components_map.put(new_comp_id, new_list);
 
+            // Update the archetype index with the new archetype
             try self.archetype_index.put(&target_arch_id, temp_arch_ptr);
+            // Add the new archetype to the component to archetype map
+            // Create the entry for the component if it doesn't exist
             if (self.component_to_archetype.getPtr(new_comp_id)) |set| {
                 try set.put(temp_arch_ptr, {});
             } else {
@@ -84,15 +85,15 @@ pub const ZCS = struct {
                 try self.component_to_archetype.put(new_comp_id, new_set);
             }
 
+            // Fix the component to archetype map for the old components
+            var src_key_iter = src_comps.keyIterator();
+            while (src_key_iter.next()) |key| {
+                // We do not map for EntityId component
+                if (std.mem.eql(u8, key.*, Archetype.entity_id_key)) continue;
+                try self.component_to_archetype.getPtr(key.*).?.put(temp_arch_ptr, {});
+            }
             break :blk temp_arch_ptr;
         };
-
-        // fix the component map for the old components
-        src_key_iter = src_arch_ptr.components_map.keyIterator();
-        while (src_key_iter.next()) |key| {
-            if (std.mem.eql(u8, key.*, Archetype.entity_id_key)) continue;
-            try self.component_to_archetype.getPtr(key.*).?.put(target_arch_ptr, {});
-        }
 
         // Move the existing components from the source map to the target map by copying
         var src_entry_iter = src_arch_ptr.components_map.iterator();
@@ -100,6 +101,8 @@ pub const ZCS = struct {
             const comp_ptr = entry.value_ptr.*.get(old_row);
             try target_arch_ptr.components_map.getPtr(entry.key_ptr.*).?.append(comp_ptr);
             entry.value_ptr.*.remove(old_row);
+            // Because we do swap remove update the row index for the element that filled in the
+            // place of the removed entity (if such an enitity exists)
             const id_list = src_arch_ptr.components_map.get(Archetype.entity_id_key).?;
             if (id_list.getLen() > 0) {
                 const filled_entity_id: *EntityId = @ptrCast(@alignCast(id_list.get(old_row)));
@@ -113,6 +116,83 @@ pub const ZCS = struct {
         // Update the entity record
         const new_row = target_arch_ptr.entityCount() - 1;
         record_ptr.row = new_row;
+        record_ptr.archetype = target_arch_ptr;
+    }
+
+    /// Removes a compnent from an entitiy
+    pub fn remove_component_from_entity(self: *Self, entity_id: usize, component: anytype) !void {
+        // This is done by copying the compnents of the entity into a new archetype
+        // that does not hold a sepcific set of components
+
+        // The type of the new component
+        const remove_comp_type = @TypeOf(component);
+        // The id of the new component
+        const remove_comp_id = @typeName(remove_comp_type);
+
+        // The record for the entity
+        var record_ptr: *EntityRecord = self.entity_records.getPtr(entity_id).?;
+        const src_arch_ptr = record_ptr.archetype;
+        const old_row = record_ptr.row;
+
+        // Get the component ids of the target archetype
+        var target_component_ids = std.ArrayList([]const u8).init(self.allocator);
+        defer target_component_ids.deinit();
+        var src_key_iter = src_arch_ptr.components_map.keyIterator();
+        while (src_key_iter.next()) |key| {
+            if (std.mem.eql(u8, key.*, remove_comp_id)) continue;
+            try target_component_ids.append(key.*);
+        }
+
+        // Get the id of the target archetype from hash of component ids
+        const target_arch_id = util.getArchetypeIdFromStrings(target_component_ids.items);
+        const target_arch_ptr = self.archetype_index.get(&target_arch_id) orelse blk: {
+            // If a matching archetype doesn't exist, create it by shallow copying
+            // the current one while skipping the component list for the removed component
+            const temp_arch_ptr = try self.allocator.create(Archetype);
+            temp_arch_ptr.* = src_arch_ptr.shallowCopy();
+            _ = temp_arch_ptr.components_map.remove(remove_comp_id);
+
+            // Update the archetype index with the new archetype
+            try self.archetype_index.put(&target_arch_id, temp_arch_ptr);
+
+            // Fix the component to archetype map for the old components by pointing to the new
+            // archetype
+            src_key_iter = src_arch_ptr.components_map.keyIterator();
+            while (src_key_iter.next()) |key| {
+                // We do not map for EntityId component
+                if (std.mem.eql(u8, key.*, Archetype.entity_id_key)) continue;
+                // We do not want to map to the removed component
+                if (std.mem.eql(u8, key.*, remove_comp_id)) continue;
+                try self.component_to_archetype.getPtr(key.*).?.put(temp_arch_ptr, {});
+            }
+
+            break :blk temp_arch_ptr;
+        };
+
+        // Move the existing components from the source map to the target map by copying
+        var src_entry_iter = src_arch_ptr.components_map.iterator();
+        while (src_entry_iter.next()) |entry| {
+            // Remove the removed component without copying to the new archetype
+            if (std.mem.eql(u8, entry.key_ptr.*, remove_comp_id)) {
+                entry.value_ptr.*.remove(old_row);
+                continue;
+            }
+            const comp_ptr = entry.value_ptr.*.get(old_row);
+            try target_arch_ptr.components_map.getPtr(entry.key_ptr.*).?.append(comp_ptr);
+            entry.value_ptr.*.remove(old_row);
+            // Because we do swap remove update the row index for the element that filled in the
+            // place of the removed entity (if such an enitity exists)
+            const id_list = src_arch_ptr.components_map.get(Archetype.entity_id_key).?;
+            if (id_list.getLen() > 0) {
+                const filled_entity_id: *EntityId = @ptrCast(@alignCast(id_list.get(old_row)));
+                self.entity_records.getPtr(filled_entity_id.id).?.row = old_row;
+            }
+        }
+
+        // Update the entity record
+        const new_row = target_arch_ptr.entityCount() - 1;
+        record_ptr.row = new_row;
+        record_ptr.archetype = target_arch_ptr;
     }
 
     pub fn init(allocator: std.mem.Allocator) Self {
@@ -232,7 +312,7 @@ pub const ZCS = struct {
     }
 
     pub fn runSystems(self: *Self) !void {
-        for (self.systems.items) |sys| {
+        outer: for (self.systems.items) |sys| {
             const param_keys = sys.param_keys;
             if (param_keys.len == 0) {
                 sys.run(&[_]*anyopaque{});
@@ -244,7 +324,11 @@ pub const ZCS = struct {
 
             for (param_keys) |key| {
                 if (std.mem.eql(u8, key, Archetype.entity_id_key)) continue;
-                try columns.append(self.component_to_archetype.getPtr(key).?);
+                if (self.component_to_archetype.getPtr(key)) |set| {
+                    try columns.append(set);
+                } else {
+                    continue :outer;
+                }
             }
             var query_results = ArchetypeSet.init(self.allocator);
             defer query_results.deinit();
@@ -280,7 +364,8 @@ const Velocity = struct {
     dz: usize = 1,
 };
 
-// TODO: Fix entity id as special value
+const Useless = struct {};
+
 fn testSystem(id: *const EntityId, pos: *Position, accel: *Velocity) void {
     pos.x += accel.dx;
     pos.y += accel.dy;
@@ -296,9 +381,13 @@ test "zcs" {
 
     const position = Position{};
     const acceleration = Velocity{};
+    const useless = Useless{};
 
     const id = try zcs.createEntity(.{position});
     try zcs.add_component_to_entity(id, acceleration);
+    try zcs.add_component_to_entity(id, useless);
+
+    try zcs.remove_component_from_entity(id, Useless);
 
     zcs.registerSystem(testSystem);
 
